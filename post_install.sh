@@ -16,7 +16,7 @@ echo
 echo 
 echo "~~~########################################~~~"
 echo "Post-install script started at $(date)"
-echo "Logging all terminal output to: $log_file"
+echo "Logging to: $log_file"
 echo "~~~########################################~~~"
 
 # colours for more pretty
@@ -283,7 +283,6 @@ install_packages() {
                     print_success "Docker and docker-compose installed successfully via apt."
                     # add my user to docker group
                     sudo usermod -aG docker $USER
-                    print_message "after the script finishes relog or run 'newgrp docker'"
                     install_results[$package]="SUCCESS"
                 else
                     print_warning "Couldn't install Docker via apt, falling back to Docker's repo"
@@ -364,13 +363,13 @@ install_packages() {
     configure_packages
 }
 
-# a fair few packages I need aren't in default repos so a few functions to handle that, this might not be the cleanest way but it works
+## a fair few packages I need aren't in default repos so a few functions to handle that, this might not be the cleanest way but it works
 
-# function to install Joplin
+# install Joplin
 install_joplin() {
     print_message "Installing Joplin"
 
-    # Install required dependencies first
+    # dependencies first
     print_message "Installing Joplin dependencies"
     sudo apt install -y libfuse2
 
@@ -384,7 +383,7 @@ install_joplin() {
         sudo apt install -y wget
     fi
 
-    # download and run Joplin installer
+    # download and run installer
     wget -O - https://raw.githubusercontent.com/laurent22/joplin/dev/Joplin_install_and_update.sh | bash
 
     if [ $? -eq 0 ]; then
@@ -396,7 +395,7 @@ install_joplin() {
     fi
 }
 
-# function to install Slack
+# install Slack
 install_slack() {
     print_message "Installing Slack"
 
@@ -431,7 +430,7 @@ install_slack() {
     fi
 }
 
-# function to install VSCodium
+# install VSCodium
 install_vscodium() {
     print_message "Installing VSCodium"
 
@@ -454,7 +453,7 @@ install_vscodium() {
     fi
 }
 
-# function to install Docker (fallback method)
+# install Docker (fallback method)
 install_docker() {
     print_message "Installing Docker from Docker's repository"
 
@@ -498,7 +497,6 @@ install_docker() {
 
     if command -v docker &>/dev/null && command -v docker-compose &>/dev/null; then
         print_success "Docker and docker-compose installed successfully."
-        print_message "you will need to relog, or run 'newgrp docker' after the script finishes"
         return 0
     else
         print_error "Failed to install Docker and/or docker-compose."
@@ -508,7 +506,7 @@ install_docker() {
 
 # function to configure packages
 configure_packages() {
-    print_message "\nWould you like to configure any of the installed packages? (y/n)"
+    print_message "\nDo you want to configure any of the installed packages? (y/n)"
     read -r configure
 
     if [ "$configure" != "y" ]; then
@@ -543,7 +541,7 @@ configure_packages() {
 
         case "$package" in
         "terminator")
-            # Make sure config directory exists
+            # make sure config directory exists, sometimes it doesn't until you first run terminator
             mkdir -p ~/.config/terminator
             touch ~/.config/terminator/config
             $editor ~/.config/terminator/config
@@ -575,38 +573,169 @@ configure_packages() {
     fi
 }
 
-# let's get it going
+# install KVM
+install_kvm() {
+    print_message "Starting KVM Installation"
+
+# cpu check
+    if grep -E --color=auto 'vmx|svm' /proc/cpuinfo &>/dev/null; then
+    print_success "CPU supports hardware virtualization."
+    else
+    print_error "CPU does not support hardware virtualization."
+    print_error "KVM requires hardware virtualization support. Installation aborted."
+    fi
+
+    # install it and needed packages
+    print_message "Installing KVM and related packages"
+    sudo apt update
+    sudo apt install -y qemu-kvm libvirt-daemon-system libvirt-clients bridge-utils virt-manager
+    
+    if [ $? -ne 0 ]; then
+        print_error "Failed to install KVM packages."
+        return 1
+    else
+        print_success "KVM packages installed successfully."
+    fi
+
+    # add user to libvirt group
+    print_message "Adding user to libvirt group"
+    sudo usermod -aG libvirt $USER
+    sudo usermod -aG kvm $USER
+    
+    print_success "Added $USER to libvirt and kvm groups."
+
+    # start and enable libvirtd
+    print_message "Starting libvirt service"
+    sudo systemctl enable libvirtd
+    sudo systemctl start libvirtd
+    
+    if systemctl is-active --quiet libvirtd; then
+        print_success "Libvirt service running"
+    else
+        print_error "Failed to start libvirt service."
+    fi
+
+    # check for default network and create it if need to
+    print_message "Checking for default virtual network"
+    if sudo virsh net-list --all | grep -q default; then
+        print_success "Default network already exists."
+        
+        # check it's active
+        if ! sudo virsh net-list | grep -q default; then
+            print_message "Starting default network"
+            sudo virsh net-start default
+            sudo virsh net-autostart default
+        fi
+    else
+        print_message "Creating default virtual network"
+        cat > /tmp/default-network.xml <<EOF
+<network>
+  <name>default</name>
+  <forward mode="nat"/>
+  <bridge name="virbr0" stp="on" delay="0"/>
+  <ip address="192.168.122.1" netmask="255.255.255.0">
+    <dhcp>
+      <range start="192.168.122.2" end="192.168.122.254"/>
+    </dhcp>
+  </ip>
+</network>
+EOF
+        sudo virsh net-define /tmp/default-network.xml
+        sudo virsh net-start default
+        sudo virsh net-autostart default
+        rm /tmp/default-network.xml
+        
+        if sudo virsh net-list | grep -q default; then
+            print_success "Default network created and started."
+        else
+            print_error "Failed to create default network."
+        fi
+    fi
+
+    # did it install ok?
+    print_message "Verifying KVM installation"
+    
+    if systemctl is-active --quiet libvirtd && groups $USER | grep -qE '(libvirt|kvm)'; then
+        print_success "KVM installation completed successfully."
+        print_message "You can now use virt-manager to create and manage VMs."
+        return 0
+    else
+        print_warning "KVM seems to be installed but there might be issues with the setup."
+        return 1
+    fi
+}
+
+# display the main menu
+display_menu() {
+    
+    display_banner
+
+    echo -e "${blue}==== Post-Installation Menu ====${nc}"
+    echo "1) Install and Configure Basic Packages"
+    echo "2) Install and Configure KVM Hypervisor"
+    echo "3) Work in progress"
+    echo "4) also a WIP"
+    echo "0) Exit"
+    echo
+    echo -n "Enter your choice: "
+    read -r choice
+    
+    return $choice
+}
+
+# wait for user input before returning to menu
+wait_for_key() {
+    echo
+    print_message "Hit any key to return to the menu.."
+    read -n 1
+}
+
+# main function with brand new menu system
 main() {
     print_message "Starting post-install script"
 
     # check for sudo
     check_sudo || exit 1
 
-    # wee pause
-    sleep 2
-
     # detect system information
     detect_system_info
 
-    # display banner
-    display_banner
-
-    # install packages
-    install_packages
-
-    print_message "Script completed. Log saved to $log_file"
-    print_message "Press q to exit"
-            # wait for user to press 'q'
-            while true; do
-                read -n 1 key
-                if [[ $key = q ]]; then
-                    echo ""
-                    echo "Exiting script. Don't forget to run 'newgrp docker' if you installed Docker."
-                    exit 0
-                fi
-            done
-
-
+    # menu loop
+    while true; do
+        display_menu
+        choice=$?
+        
+        case $choice in
+            1)
+                # install and Configure Basic Packages
+                install_packages
+                wait_for_key
+                ;;
+            2)
+                # install and Configure KVM
+                install_kvm
+                wait_for_key
+                ;;
+            3)
+                print_message "placeholder for Environment Config (work in progress)"
+                wait_for_key
+                ;;
+            4)
+                print_message "placeholder for system config (work in progress)"
+                wait_for_key
+                ;;
+            0)
+                print_message "Exiting script, logs saved to $log_file"
+                print_message "If you used this script to add yourself to the sudo group, or others,"
+                print_message "quit the script, type 'exit', and then relog to make the group changes permanent."
+                exit 0
+                ;;
+            *)
+                print_error "Try again!?"
+                wait_for_key
+                ;;
+        esac
+    done
 }
 
 # RUN IT!!
