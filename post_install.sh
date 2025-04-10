@@ -26,6 +26,10 @@ yellow='\033[1;33m'
 blue='\033[0;34m'
 nc='\033[0m' # no colour
 
+# creating a variable to track group changes
+
+groups_modified=false
+
 # function to display messages
 print_message() {
     echo -e "${blue}[*]${nc} $1"
@@ -55,6 +59,7 @@ check_sudo() {
         su -c "sudo usermod -aG sudo $USER" root
         if [ $? -eq 0 ]; then
             print_success "Added $USER to sudo group."
+            groups_modified=true
             print_message "Applying group changes"
             print_message "Quit the script run 'newgrp sudo' then run the script again"
             print_message "Press 'q' to quit."
@@ -283,6 +288,7 @@ install_packages() {
                     print_success "Docker and docker-compose installed successfully via apt."
                     # add my user to docker group
                     sudo usermod -aG docker $USER
+                    groups_modified=true
                     install_results[$package]="SUCCESS"
                 else
                     print_warning "Couldn't install Docker via apt, falling back to Docker's repo"
@@ -494,6 +500,7 @@ install_docker() {
 
     # add current user to docker group
     sudo usermod -aG docker $USER
+    groups_modified=true
 
     if command -v docker &>/dev/null && command -v docker-compose &>/dev/null; then
         print_success "Docker and docker-compose installed successfully."
@@ -601,6 +608,7 @@ install_kvm() {
     print_message "Adding user to libvirt group"
     sudo usermod -aG libvirt $USER
     sudo usermod -aG kvm $USER
+    groups_modified=true
     
     print_success "Added $USER to libvirt and kvm groups."
 
@@ -726,8 +734,9 @@ main() {
                 ;;
             0)
                 print_message "Exiting script, logs saved to $log_file"
-                print_message "If you used this script to add yourself to the sudo group, or others,"
-                print_message "quit the script, type 'exit', and then relog to make the group changes permanent."
+                if [ "$groups_modified" = true ]; then
+                print_message "You've been added to new user groups, you'll need to relog."
+                fi
                 exit 0
                 ;;
             *)
