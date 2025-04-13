@@ -14,9 +14,8 @@ exec 2> >(tee -a "$log_file" >&2)
 
 echo 
 echo 
-echo "~~~########################################~~~"
-echo "Post-install script started at $(date)"
-echo "Logging to: $log_file"
+echo "~~~#########################################~~~"
+echo "    Post-install script started"
 echo "~~~########################################~~~"
 
 # colours for more pretty
@@ -24,7 +23,9 @@ red='\033[0;31m'
 green='\033[0;32m'
 yellow='\033[1;33m'
 blue='\033[0;34m'
+cyan='\033[0;36m'
 nc='\033[0m' # no colour
+
 
 # creating a variable to track group changes
 groups_modified=false
@@ -46,95 +47,38 @@ print_warning() {
     echo -e "${yellow}[!]${nc} $1"
 }
 
-# function to check if user has sudo privileges
-check_sudo() {
-    print_message "Checking sudo privileges"
-    if sudo -v &>/dev/null; then
-        print_success "You already have sudo privileges."
-        return 0
-    else
-        print_message "You don't have sudo privileges. Enter your root pw"
-        # need to use su to add the user to sudo group from inside the script.
-        if [ "$pkg_manager" = "zypper" ]; then
-            su -c "sudo usermod -aG wheel $USER" root
-        else
-            su -c "sudo usermod -aG sudo $USER" root
-        fi
-        
-        if [ $? -eq 0 ]; then
-            print_success "Added $USER to sudo group."
-            groups_modified=true
-            print_message "Applying group changes"
-            if [ "$pkg_manager" = "zypper" ]; then
-                print_message "Quit the script run 'newgrp wheel' then run the script again"
-            else
-                print_message "Quit the script run 'newgrp sudo' then run the script again"
-            fi
-            print_message "Press 'q' to quit."
-
-            # Wait for user to press 'q'
-            while true; do
-                read -n 1 key
-                if [[ $key = q ]]; then
-                    echo ""
-                    if [ "$pkg_manager" = "zypper" ]; then
-                        echo "Exiting script. Please run 'newgrp wheel' and restart the script."
-                    else
-                        echo "Exiting script. Please run 'newgrp sudo' and restart the script."
-                    fi
-                    exit 0
-                fi
-            done
-        else
-            print_error "Failed to add user to sudo group. This script requires sudo privileges."
-            return 1
-        fi
-    fi
-}
-
 # detect system info, de/wm etc
-detect_system_info() {
-    print_message "Detecting system info"
 
+detect_system_info() {
     # detect distro
     if [ -f /etc/os-release ]; then
         . /etc/os-release
-        distro="${NAME:-$ID}"
+        distro="$NAME"
+        #distro_version="$VERSION_ID"
     elif [ -f /etc/lsb-release ]; then
         . /etc/lsb-release
-        distro="${DISTRIB_DESCRIPTION:-$DISTRIB_ID}"
-    elif [ -f /etc/debian_version ]; then
-        distro="Debian $(cat /etc/debian_version)"
+        distro="$DISTRIB_ID"
+        #distro_version="$DISTRIB_RELEASE"
     else
-        distro="$(uname -s) $(uname -r)"
+        distro="Unknown"
+        #distro_version="Unknown"
     fi
-
+    
     # detect package manager
     if command -v apt &>/dev/null; then
         pkg_manager="apt"
-    elif command -v zypper &>/dev/null; then
-        pkg_manager="zypper"
     elif command -v dnf &>/dev/null; then
         pkg_manager="dnf"
     elif command -v yum &>/dev/null; then
         pkg_manager="yum"
     elif command -v pacman &>/dev/null; then
         pkg_manager="pacman"
+    elif command -v zypper &>/dev/null; then
+        pkg_manager="zypper"
     else
-        pkg_manager="Unknown"
+        pkg_manager="unknown"
     fi
-
-    # detect init system
-    if command -v systemctl &>/dev/null; then
-        init_system="systemd"
-    elif [ -f /sbin/init ] && file /sbin/init | grep -q upstart; then
-        init_system="upstart"
-    elif [ -f /sbin/init ] && file /sbin/init | grep -q sysvinit; then
-        init_system="sysvinit"
-    else
-        init_system="$(ps -p 1 -o comm=)"
-    fi
-
+    
     # a few methods to detect DE because original function wasn't always working..
     if [ -n "$XDG_CURRENT_DESKTOP" ]; then
         de="$XDG_CURRENT_DESKTOP"
@@ -159,7 +103,7 @@ detect_system_info() {
     else
         de="Unknown"
     fi
-
+    
     # window manager detection
     if command -v wmctrl &>/dev/null; then
         wm=$(wmctrl -m 2>/dev/null | grep "Name:" | cut -d: -f2 | xargs)
@@ -210,12 +154,88 @@ detect_system_info() {
                 ;;
         esac
     fi
+
+    # detect init system
+    if command -v systemctl &>/dev/null; then
+        init_system="systemd"
+    elif [ -f /sbin/init ] && file /sbin/init | grep -q upstart; then
+        init_system="upstart"
+    elif [ -f /sbin/init ] && file /sbin/init | grep -q sysvinit; then
+        init_system="sysvinit"
+    else
+        init_system="$(ps -p 1 -o comm=)"
+    fi
+    
+    # detect kernel version
+    kernel=$(uname -r)
+    
+    # detect CPU info
+    cpu=$(grep "model name" /proc/cpuinfo | head -n 1 | cut -d':' -f2 | sed 's/^ *//')
+    if [ -z "$cpu" ]; then
+        cpu="Unknown"
+    fi
+    
+    # detect RAM
+    ram_total=$(free -m | grep Mem | awk '{print $2}')
+    ram_used=$(free -m | grep Mem | awk '{print $3}')
+    
 }
+
+# function to check if user has sudo privileges
+check_sudo() {
+    print_message "Checking sudo privileges"
+    if sudo -v &>/dev/null; then
+        print_success "You already have sudo privileges."
+        return 0
+    else
+        print_message "You don't have sudo privileges. Enter your root pw"
+        # need to use su to add the user to sudo group from inside the script.
+        if [ "$pkg_manager" = "zypper" ]; then
+            su -c "sudo usermod -aG wheel $USER" root
+        else
+            su -c "sudo usermod -aG sudo $USER" root
+        fi
+        
+        if [ $? -eq 0 ]; then
+            print_success "Added $USER to sudo group."
+            groups_modified=true
+            print_message "Applying group changes"
+            if [ "$pkg_manager" = "zypper" ]; then
+                print_message "Quit the script run 'newgrp wheel' then run the script again"
+            else
+                print_message "Quit the script run 'newgrp sudo' then run the script again"
+            fi
+            print_message "Press 'q' to quit."
+
+            # Wait for user to press 'q'
+            while true; do
+                read -n 1 key
+                if [[ $key = q ]]; then
+                    echo ""
+                    if [ "$pkg_manager" = "zypper" ]; then
+                        echo "Exiting script. Please run 'newgrp wheel' and restart the script."
+                    else
+                        echo "Exiting script. Please run 'newgrp sudo' and restart the script."
+                    fi
+                    exit 0
+                fi
+            done
+        else
+            print_error "Failed to add user to sudo group. This script requires sudo privileges."
+            return 1
+        fi
+    fi
+}
+
+# system info detection
+detect_system_info
+
+check_sudo || exit 1
 
 # fancy banner, ASCII is never not cool
 display_banner() {
     clear
-    echo -e "${blue}"
+    echo -e "${cyan}"
     echo "  _____           _      _____           _        _ _ "
     echo " |  __ \         | |    |_   _|         | |      | | |"
     echo " | |__) |__  ___ | |_     | |  _ __  ___| |_ __ _| | |"
@@ -224,8 +244,11 @@ display_banner() {
     echo " |_|   \___/|___/ \__|  |_____|_| |_|___/\__\__,_|_|_|"
     echo -e "${nc}"
     echo -e "Distribution: ${green}$distro${nc}"
+    echo -e "Kernel: ${green}$kernel${nc}"
     echo -e "Package Manager: ${green}$pkg_manager${nc}"
     echo -e "Init System: ${green}$init_system${nc}"
+    echo -e "CPU: ${green}$cpu${nc}"
+    echo -e "RAM: ${green}${ram_used}MB used / ${ram_total}MB total${nc}"
     echo -e "Desktop Environment: ${green}$de${nc}"
     echo -e "Window Manager: ${green}$wm${nc}"
     echo ""
@@ -649,7 +672,7 @@ install_vscodium() {
     fi
 }
 
-# install Docker (fallback method for Debian/Ubuntu)
+# install Docker (fallback method for Debian)
 install_docker() {
     print_message "Installing Docker from Docker's repository"
 
@@ -890,6 +913,260 @@ EOF
     fi
 }
 
+# DE config
+
+# function to manage environmental configurations
+
+configure_environment() {
+    local env_menu_active=true
+    
+    while [ "$env_menu_active" = true ]; do
+        # detect desktop environment and window manager each time we enter the loop
+        #detect_desktop_environment
+        #detect_window_manager
+        detect_system_info
+        clear
+        echo -e "${blue}==== Environmental Configuration Menu ====${nc}"
+        echo "1) Configure Desktop Environment ($de)"
+        echo "2) Configure Window Manager ($wm)"
+        echo "3) Configure Panel"
+        echo "0) Return to Main Menu"
+        echo
+        echo -n "Enter your choice: "
+        read -r env_choice
+
+        # choose editor, prefer vim if available
+        editor="vim"
+        if ! command -v vim &>/dev/null; then
+            editor="nano"
+        fi
+
+        case $env_choice in
+            1)
+                # Configure Desktop Environment
+                print_message "Configuring Desktop Environment: $de"
+                
+                case "$de" in
+                    "GNOME"|"gnome"|"gnome-shell")
+                        print_message "Opening GNOME configuration directory"
+                        mkdir -p "$HOME/.config/gnome-session"
+                        $editor "$HOME/.config/gnome-session"
+                        ;;
+                    "XFCE"|"xfce"|"Xfce"|"xfce4")
+                        print_message "Opening XFCE configuration directory"
+                        mkdir -p "$HOME/.config/xfce4"
+                        $editor "$HOME/.config/xfce4"
+                        ;;
+                    "KDE"|"kde"|"plasma")
+                        print_message "Opening KDE configuration directory"
+                        mkdir -p "$HOME/.config/plasma-workspace"
+                        $editor "$HOME/.config/plasma-workspace"
+                        ;;
+                    "MATE"|"mate")
+                        print_message "Opening MATE configuration directory"
+                        mkdir -p "$HOME/.config/mate"
+                        $editor "$HOME/.config/mate"
+                        ;;
+                    "Cinnamon"|"cinnamon")
+                        print_message "Opening Cinnamon configuration directory"
+                        mkdir -p "$HOME/.config/cinnamon"
+                        $editor "$HOME/.config/cinnamon"
+                        ;;
+                    "LXDE"|"lxde")
+                        print_message "Opening LXDE configuration directory"
+                        mkdir -p "$HOME/.config/lxsession"
+                        $editor "$HOME/.config/lxsession"
+                        ;;
+                    *)
+                        print_warning "Unsupported or unknown desktop environment: $de"
+                        print_message "Please enter the path to your DE configuration directory:"
+                        read -r de_config_path
+                        
+                        if [ -n "$de_config_path" ]; then
+                            mkdir -p "$de_config_path"
+                            $editor "$de_config_path"
+                        else
+                            print_error "No path provided."
+                        fi
+                        ;;
+                esac
+                # Wait for user to acknowledge before returning to submenu
+                print_message "Press any key to return to the Environmental Configuration Menu..."
+                read -n 1
+                ;;
+            2)
+                # Configure Window Manager
+                print_message "Configuring Window Manager: $wm"
+                
+                case "$wm" in
+                    "i3")
+                        print_message "Opening i3 configuration directory"
+                        mkdir -p "$HOME/.config/i3"
+                        $editor "$HOME/.config/i3/config"
+                        ;;
+                    "Openbox"|"openbox")
+                        print_message "Opening Openbox configuration directory"
+                        mkdir -p "$HOME/.config/openbox"
+                        $editor "$HOME/.config/openbox"
+                        ;;
+                    "Xfwm4"|"xfwm4")
+                        print_message "Opening Xfwm4 configuration directory"
+                        mkdir -p "$HOME/.config/xfce4/xfconf/xfce-perchannel-xml"
+                        $editor "$HOME/.config/xfce4/xfconf/xfce-perchannel-xml/xfwm4.xml"
+                        ;;
+                    "KWin"|"kwin")
+                        print_message "Opening KWin configuration directory"
+                        mkdir -p "$HOME/.config"
+                        $editor "$HOME/.config/kwinrc"
+                        ;;
+                    "Mutter"|"mutter")
+                        print_message "Opening GNOME/Mutter settings"
+                        # For GNOME/Mutter, we typically use dconf-editor, but fallback to gsettings
+                        if command -v dconf-editor &>/dev/null; then
+                            dconf-editor /org/gnome/mutter/
+                        else
+                            print_warning "dconf-editor not found, using text editor instead"
+                            mkdir -p "$HOME/.config/gnome-session"
+                            $editor "$HOME/.config/gnome-session"
+                        fi
+                        ;;
+                    "Compiz"|"compiz")
+                        print_message "Opening Compiz configuration directory"
+                        mkdir -p "$HOME/.config/compiz"
+                        $editor "$HOME/.config/compiz"
+                        ;;
+                    "dwm")
+                        print_message "Opening dwm configuration directory"
+                        # dwm is typically configured by editing source code and recompiling
+                        dwm_path="$HOME/.dwm"
+                        if [ -d "$dwm_path" ]; then
+                            $editor "$dwm_path/config.h"
+                        else
+                            print_message "Standard dwm config path not found. Please enter the path to your dwm config:"
+                            read -r dwm_config_path
+                            if [ -n "$dwm_config_path" ]; then
+                                mkdir -p "$(dirname "$dwm_config_path")"
+                                $editor "$dwm_config_path"
+                            else
+                                print_error "No path provided."
+                            fi
+                        fi
+                        ;;
+                    "Awesome"|"awesome")
+                        print_message "Opening Awesome configuration directory"
+                        mkdir -p "$HOME/.config/awesome"
+                        $editor "$HOME/.config/awesome/rc.lua"
+                        ;;
+                    *)
+                        print_warning "Unsupported or unknown window manager: $wm"
+                        print_message "Please enter the path to your WM configuration directory:"
+                        read -r wm_config_path
+                        
+                        if [ -n "$wm_config_path" ]; then
+                            mkdir -p "$wm_config_path"
+                            $editor "$wm_config_path"
+                        else
+                            print_error "No path provided."
+                        fi
+                        ;;
+                esac
+                # Wait for user to acknowledge before returning to submenu
+                print_message "Press any key to return to the Environmental Configuration Menu..."
+                read -n 1
+                ;;
+            3)
+                # Configure Panel
+                print_message "Configuring Panel"
+                
+                # detect panel based on DE or WM
+                panel=""
+                if [[ "$de" == *"XFCE"* || "$de" == *"xfce"* ]]; then
+                    panel="xfce4-panel"
+                elif [[ "$de" == *"GNOME"* || "$de" == *"gnome"* ]]; then
+                    panel="gnome-panel"
+                elif [[ "$de" == *"KDE"* || "$de" == *"kde"* || "$de" == *"plasma"* ]]; then
+                    panel="plasma-panel"
+                elif [[ "$de" == *"LXDE"* || "$de" == *"lxde"* ]]; then
+                    panel="lxpanel"
+                elif [[ "$de" == *"MATE"* || "$de" == *"mate"* ]]; then
+                    panel="mate-panel"
+                elif [[ "$wm" == "i3" ]]; then
+                    panel="i3bar"
+                elif [[ "$wm" == *"Awesome"* || "$wm" == *"awesome"* ]]; then
+                    panel="awesome-wibar"
+                else
+                    panel="unknown"
+                fi
+                
+                print_message "Detected panel: $panel"
+                
+                case "$panel" in
+                    "xfce4-panel")
+                        mkdir -p "$HOME/.config/xfce4/panel"
+                        $editor "$HOME/.config/xfce4/panel"
+                        ;;
+                    "gnome-panel")
+                        # For GNOME panel, typical configuration is through dconf
+                        if command -v dconf-editor &>/dev/null; then
+                            dconf-editor /org/gnome/gnome-panel/
+                        else
+                            print_warning "dconf-editor not found, using text editor instead"
+                            mkdir -p "$HOME/.config/gnome-panel"
+                            $editor "$HOME/.config/gnome-panel"
+                        fi
+                        ;;
+                    "plasma-panel")
+                        mkdir -p "$HOME/.config"
+                        $editor "$HOME/.config/plasma-org.kde.plasma.desktop-appletsrc"
+                        ;;
+                    "lxpanel")
+                        mkdir -p "$HOME/.config/lxpanel"
+                        $editor "$HOME/.config/lxpanel"
+                        ;;
+                    "mate-panel")
+                        mkdir -p "$HOME/.config/mate-panel"
+                        $editor "$HOME/.config/mate-panel"
+                        ;;
+                    "i3bar")
+                        # i3bar is configured in the i3 config file
+                        mkdir -p "$HOME/.config/i3"
+                        $editor "$HOME/.config/i3/config"
+                        ;;
+                    "awesome-wibar")
+                        # Awesome's wibar is configured in rc.lua
+                        mkdir -p "$HOME/.config/awesome"
+                        $editor "$HOME/.config/awesome/rc.lua"
+                        ;;
+                    *)
+                        print_warning "Unsupported or unknown panel"
+                        print_message "Please enter the path to your panel configuration directory:"
+                        read -r panel_config_path
+                        
+                        if [ -n "$panel_config_path" ]; then
+                            mkdir -p "$panel_config_path"
+                            $editor "$panel_config_path"
+                        else
+                            print_error "No path provided."
+                        fi
+                        ;;
+                esac
+                # Wait for user to acknowledge before returning to submenu
+                print_message "Press any key to return to the Environmental Configuration Menu..."
+                read -n 1
+                ;;
+            0)
+                # Return to main menu directly without prompting
+                env_menu_active=false
+                ;;
+            *)
+                print_error "Invalid choice."
+                print_message "Press any key to return to the Environmental Configuration Menu..."
+                read -n 1
+                ;;
+        esac
+    done
+}
+
 # display the main menu
 display_menu() {
     
@@ -916,59 +1193,48 @@ wait_for_key() {
 }
 
 # main function with brand new menu system
-main() {
-    print_message "Starting post-install script"
-
-    # detect system information first to know which package manager we're using
-    detect_system_info
+# menu loop
+while true; do
+    display_menu
+    choice=$?
     
-    # check for sudo
-    check_sudo || exit 1
-
-    # menu loop
-    while true; do
-        display_menu
-        choice=$?
-        
-        case $choice in
-            1)
-                # install and Configure Basic Packages
-                install_packages
-                wait_for_key
-                ;;
-            2)
-                # install and Configure KVM
-                install_kvm
-                wait_for_key
-                ;;
-            3)
-                #print_message "placeholder for Environment Config(work in progress)"
-                #place holder for section 3
-                wait_for_key
-                ;;
-            4)
-                print_message "placeholder for system config (work in progress)"
-                wait_for_key
-                ;;
-            0)
-                print_message "Exiting script, logs saved to $log_file"
-                if [ "$groups_modified" = true ]; then
-                    print_message "You've been added to new user groups, you'll need to relog."
-                    if [ "$pkg_manager" = "zypper" ]; then
-                        print_message "You may need to run 'newgrp wheel' or 'newgrp docker' to apply group changes."
-                    else
-                        print_message "You may need to run 'newgrp sudo' or 'newgrp docker' to apply group changes."
-                    fi
+    case $choice in
+        1)
+            # install and Configure Basic Packages
+            install_packages
+            wait_for_key
+            ;;
+        2)
+            # install and Configure KVM
+            install_kvm
+            wait_for_key
+            ;;
+        3)
+            # Environmental configs 
+            configure_environment
+            ;;
+        4)
+            print_message "placeholder for system config (work in progress)"
+            wait_for_key
+            ;;
+        0)
+            print_message "Exiting script, logs saved to $log_file"
+            if [ "$groups_modified" = true ]; then
+                print_message "You've been added to new user groups, you'll need to relog."
+                if [ "$pkg_manager" = "zypper" ]; then
+                    print_message "You may need to run 'newgrp wheel' or 'newgrp docker' to apply group changes."
+                else
+                    print_message "You may need to run 'newgrp sudo' or 'newgrp docker' to apply group changes."
                 fi
-                exit 0
-                ;;
-            *)
-                print_error "Try again!?"
-                wait_for_key
-                ;;
-        esac
-    done
-}
+            fi
+            exit 0
+            ;;
+        *)
+            print_error "Try again!?"
+            wait_for_key
+            ;;
+    esac
+done
 
 # RUN IT!!
 main
