@@ -914,7 +914,7 @@ EOF
 }
 
 # DE config
-# function to manage environmental configurations
+# function to manage environmental configurations.
 
 configure_environment() {
     local env_menu_active=true
