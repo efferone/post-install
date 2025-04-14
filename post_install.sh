@@ -227,7 +227,7 @@ check_sudo() {
     fi
 }
 
-# system info detection
+# system info detection, with lots more added
 detect_system_info
 
 check_sudo || exit 1
