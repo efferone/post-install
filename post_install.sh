@@ -14,9 +14,8 @@ exec 2> >(tee -a "$log_file" >&2)
 
 echo 
 echo 
-echo "~~~########################################~~~"
-echo "Post-install script started at $(date)"
-echo "Logging to: $log_file"
+echo "~~~#########################################~~~"
+echo "    Post-install script started"
 echo "~~~########################################~~~"
 
 # colours for more pretty
@@ -24,10 +23,11 @@ red='\033[0;31m'
 green='\033[0;32m'
 yellow='\033[1;33m'
 blue='\033[0;34m'
+cyan='\033[0;36m'
 nc='\033[0m' # no colour
 
-# creating a variable to track group changes
 
+# creating a variable to track group changes
 groups_modified=false
 
 # function to display messages
@@ -47,56 +47,23 @@ print_warning() {
     echo -e "${yellow}[!]${nc} $1"
 }
 
-# function to check if user has sudo privileges
-check_sudo() {
-    print_message "Checking sudo privileges"
-    if sudo -v &>/dev/null; then
-        print_success "You already have sudo privileges."
-        return 0
-    else
-        print_message "You don't have sudo privileges. Enter your root pw"
-        # need to use su to add the user to sudo group from inside the script.
-        su -c "sudo usermod -aG sudo $USER" root
-        if [ $? -eq 0 ]; then
-            print_success "Added $USER to sudo group."
-            groups_modified=true
-            print_message "Applying group changes"
-            print_message "Quit the script run 'newgrp sudo' then run the script again"
-            print_message "Press 'q' to quit."
-
-            # Wait for user to press 'q'
-            while true; do
-                read -n 1 key
-                if [[ $key = q ]]; then
-                    echo ""
-                    echo "Exiting script. Please run 'newgrp sudo' and restart the script."
-                    exit 0
-                fi
-            done
-        else
-            print_error "Failed to add user to sudo group. This script requires sudo privileges."
-            return 1
-        fi
-    fi
-}
-
 # detect system info, de/wm etc
-detect_system_info() {
-    print_message "Detecting system info"
 
+detect_system_info() {
     # detect distro
     if [ -f /etc/os-release ]; then
         . /etc/os-release
-        distro="${NAME:-$ID}"
+        distro="$NAME"
+        #distro_version="$VERSION_ID"
     elif [ -f /etc/lsb-release ]; then
         . /etc/lsb-release
-        distro="${DISTRIB_DESCRIPTION:-$DISTRIB_ID}"
-    elif [ -f /etc/debian_version ]; then
-        distro="Debian $(cat /etc/debian_version)"
+        distro="$DISTRIB_ID"
+        #distro_version="$DISTRIB_RELEASE"
     else
-        distro="$(uname -s) $(uname -r)"
+        distro="Unknown"
+        #distro_version="Unknown"
     fi
-
+    
     # detect package manager
     if command -v apt &>/dev/null; then
         pkg_manager="apt"
@@ -106,21 +73,12 @@ detect_system_info() {
         pkg_manager="yum"
     elif command -v pacman &>/dev/null; then
         pkg_manager="pacman"
+    elif command -v zypper &>/dev/null; then
+        pkg_manager="zypper"
     else
-        pkg_manager="Unknown"
+        pkg_manager="unknown"
     fi
-
-    # detect init system
-    if command -v systemctl &>/dev/null; then
-        init_system="systemd"
-    elif [ -f /sbin/init ] && file /sbin/init | grep -q upstart; then
-        init_system="upstart"
-    elif [ -f /sbin/init ] && file /sbin/init | grep -q sysvinit; then
-        init_system="sysvinit"
-    else
-        init_system="$(ps -p 1 -o comm=)"
-    fi
-
+    
     # a few methods to detect DE because original function wasn't always working..
     if [ -n "$XDG_CURRENT_DESKTOP" ]; then
         de="$XDG_CURRENT_DESKTOP"
@@ -145,7 +103,7 @@ detect_system_info() {
     else
         de="Unknown"
     fi
-
+    
     # window manager detection
     if command -v wmctrl &>/dev/null; then
         wm=$(wmctrl -m 2>/dev/null | grep "Name:" | cut -d: -f2 | xargs)
@@ -184,16 +142,100 @@ detect_system_info() {
     fi
 
     # install wmctrl if needed for future runs
-    if [ "$wm" = "Unknown" ] && [ "$pkg_manager" = "apt" ]; then
-        print_warning "Could not detect window manager. Installing wmctrl for better detection."
-        sudo apt install -y wmctrl 2>/dev/null
+    if [ "$wm" = "Unknown" ]; then
+        case "$pkg_manager" in
+            "apt")
+                print_warning "Could not detect window manager. Installing wmctrl for better detection."
+                sudo apt install -y wmctrl 2>/dev/null
+                ;;
+            "zypper")
+                print_warning "Could not detect window manager. Installing wmctrl for better detection."
+                sudo zypper --non-interactive install wmctrl 2>/dev/null
+                ;;
+        esac
+    fi
+
+    # detect init system
+    if command -v systemctl &>/dev/null; then
+        init_system="systemd"
+    elif [ -f /sbin/init ] && file /sbin/init | grep -q upstart; then
+        init_system="upstart"
+    elif [ -f /sbin/init ] && file /sbin/init | grep -q sysvinit; then
+        init_system="sysvinit"
+    else
+        init_system="$(ps -p 1 -o comm=)"
+    fi
+    
+    # detect kernel version
+    kernel=$(uname -r)
+    
+    # detect CPU info
+    cpu=$(grep "model name" /proc/cpuinfo | head -n 1 | cut -d':' -f2 | sed 's/^ *//')
+    if [ -z "$cpu" ]; then
+        cpu="Unknown"
+    fi
+    
+    # detect RAM
+    ram_total=$(free -m | grep Mem | awk '{print $2}')
+    ram_used=$(free -m | grep Mem | awk '{print $3}')
+    
+}
+
+# function to check if user has sudo privileges
+check_sudo() {
+    print_message "Checking sudo privileges"
+    if sudo -v &>/dev/null; then
+        print_success "You already have sudo privileges."
+        return 0
+    else
+        print_message "You don't have sudo privileges. Enter your root pw"
+        # need to use su to add the user to sudo group from inside the script.
+        if [ "$pkg_manager" = "zypper" ]; then
+            su -c "sudo usermod -aG wheel $USER" root
+        else
+            su -c "sudo usermod -aG sudo $USER" root
+        fi
+        
+        if [ $? -eq 0 ]; then
+            print_success "Added $USER to sudo group."
+            groups_modified=true
+            print_message "Applying group changes"
+            if [ "$pkg_manager" = "zypper" ]; then
+                print_message "Quit the script run 'newgrp wheel' then run the script again"
+            else
+                print_message "Quit the script run 'newgrp sudo' then run the script again"
+            fi
+            print_message "Press 'q' to quit."
+
+            # Wait for user to press 'q'
+            while true; do
+                read -n 1 key
+                if [[ $key = q ]]; then
+                    echo ""
+                    if [ "$pkg_manager" = "zypper" ]; then
+                        echo "Exiting script. Please run 'newgrp wheel' and restart the script."
+                    else
+                        echo "Exiting script. Please run 'newgrp sudo' and restart the script."
+                    fi
+                    exit 0
+                fi
+            done
+        else
+            print_error "Failed to add user to sudo group. This script requires sudo privileges."
+            return 1
+        fi
     fi
 }
+
+# system info detection
+detect_system_info
+
+check_sudo || exit 1
 
 # fancy banner, ASCII is never not cool
 display_banner() {
     clear
-    echo -e "${blue}"
+    echo -e "${cyan}"
     echo "  _____           _      _____           _        _ _ "
     echo " |  __ \         | |    |_   _|         | |      | | |"
     echo " | |__) |__  ___ | |_     | |  _ __  ___| |_ __ _| | |"
@@ -202,8 +244,11 @@ display_banner() {
     echo " |_|   \___/|___/ \__|  |_____|_| |_|___/\__\__,_|_|_|"
     echo -e "${nc}"
     echo -e "Distribution: ${green}$distro${nc}"
+    echo -e "Kernel: ${green}$kernel${nc}"
     echo -e "Package Manager: ${green}$pkg_manager${nc}"
     echo -e "Init System: ${green}$init_system${nc}"
+    echo -e "CPU: ${green}$cpu${nc}"
+    echo -e "RAM: ${green}${ram_used}MB used / ${ram_total}MB total${nc}"
     echo -e "Desktop Environment: ${green}$de${nc}"
     echo -e "Window Manager: ${green}$wm${nc}"
     echo ""
@@ -283,70 +328,169 @@ install_packages() {
                 ;;
 
             "docker")
-                # try docker using apt first, it's not in all repos..
-                if sudo apt install -y docker docker-compose &>/dev/null; then
-                    print_success "Docker and docker-compose installed successfully via apt."
-                    # add my user to docker group
-                    sudo usermod -aG docker $USER
-                    groups_modified=true
-                    install_results[$package]="SUCCESS"
-                else
-                    print_warning "Couldn't install Docker via apt, falling back to Docker's repo"
-                    install_docker
-                    if [ $? -eq 0 ]; then
-                        install_results[$package]="SUCCESS"
-                    else
-                        install_results[$package]="FAILED"
-                    fi
-                fi
+                # Try package manager specific docker installation
+                case "$pkg_manager" in
+                    "apt")
+                        if sudo apt install -y docker docker-compose &>/dev/null; then
+                            print_success "Docker and docker-compose installed successfully via apt."
+                            # add my user to docker group
+                            sudo usermod -aG docker $USER
+                            groups_modified=true
+                            install_results[$package]="SUCCESS"
+                        else
+                            print_warning "Couldn't install Docker via apt, falling back to Docker's repo"
+                            install_docker
+                            if [ $? -eq 0 ]; then
+                                install_results[$package]="SUCCESS"
+                            else
+                                install_results[$package]="FAILED"
+                            fi
+                        fi
+                        ;;
+                    "zypper")
+                        # In openSUSE, Docker is provided as docker and docker-compose
+                        if sudo zypper --non-interactive install docker docker-compose; then
+                            print_success "Docker and docker-compose installed successfully via zypper."
+                            # Add user to docker group
+                            sudo usermod -aG docker $USER
+                            # Enable and start the Docker service
+                            sudo systemctl enable docker
+                            sudo systemctl start docker
+                            groups_modified=true
+                            install_results[$package]="SUCCESS"
+                        else
+                            # Check if packages are already installed
+                            if sudo zypper info docker &>/dev/null && sudo zypper info docker-compose &>/dev/null; then
+                                print_success "Docker and docker-compose are already installed."
+                                # Ensure user is in docker group
+                                sudo usermod -aG docker $USER
+                                # Ensure Docker service is enabled and running
+                                sudo systemctl enable docker
+                                sudo systemctl start docker
+                                groups_modified=true
+                                install_results[$package]="SUCCESS"
+                            else
+                                print_error "Failed to install Docker via zypper."
+                                install_results[$package]="FAILED"
+                            fi
+                        fi
+                        ;;
+                esac
                 ;;
 
             *)
-                # install the packages
-                if sudo apt install -y "$package" &>/dev/null; then
-                    print_success "$package installed successfully."
-                    install_results[$package]="SUCCESS"
-                else
-                    print_error "Failed to install $package. Looking for alternatives..."
+                # Install standard packages using the appropriate package manager
+                case "$pkg_manager" in
+                    "apt")
+                        if sudo apt install -y "$package" &>/dev/null; then
+                            print_success "$package installed successfully."
+                            install_results[$package]="SUCCESS"
+                        else
+                            print_error "Failed to install $package. Looking for alternatives..."
 
-                    # some packages go by a different name so..
-                    results=$(apt-cache search "$package" | grep -i "$package" | head -n 5)
+                            # some packages go by a different name so..
+                            results=$(apt-cache search "$package" | grep -i "$package" | head -n 5)
 
-                    if [ -n "$results" ]; then
-                        echo -e "Found possible alternatives:"
-                        counter=1
-                        alt_packages=()
+                            if [ -n "$results" ]; then
+                                echo -e "Found possible alternatives:"
+                                counter=1
+                                alt_packages=()
 
-                        # display and store package names
-                        while IFS= read -r line; do
-                            pkg_name=$(echo "$line" | awk '{print $1}')
-                            pkg_desc=$(echo "$line" | cut -d ' ' -f 2-)
-                            echo -e "$counter. ${green}$pkg_name${nc} - $pkg_desc"
-                            alt_packages+=("$pkg_name")
-                            counter=$((counter + 1))
-                        done <<<"$results"
+                                # display and store package names
+                                while IFS= read -r line; do
+                                    pkg_name=$(echo "$line" | awk '{print $1}')
+                                    pkg_desc=$(echo "$line" | cut -d ' ' -f 2-)
+                                    echo -e "$counter. ${green}$pkg_name${nc} - $pkg_desc"
+                                    alt_packages+=("$pkg_name")
+                                    counter=$((counter + 1))
+                                done <<<"$results"
 
-                        echo "Enter the number to install (or 0 to skip):"
-                        read -r alt_selection
+                                echo "Enter the number to install (or 0 to skip):"
+                                read -r alt_selection
 
-                        if [[ "$alt_selection" =~ ^[0-9]+$ ]] && [ "$alt_selection" != "0" ] && [ "$alt_selection" -le "${#alt_packages[@]}" ]; then
-                            alt_package="${alt_packages[$((alt_selection - 1))]}"
+                                if [[ "$alt_selection" =~ ^[0-9]+$ ]] && [ "$alt_selection" != "0" ] && [ "$alt_selection" -le "${#alt_packages[@]}" ]; then
+                                    alt_package="${alt_packages[$((alt_selection - 1))]}"
 
-                            if sudo apt install -y "$alt_package" &>/dev/null; then
-                                print_success "$alt_package installed successfully."
-                                install_results[$package]="INSTALLED $alt_package INSTEAD"
+                                    if sudo apt install -y "$alt_package" &>/dev/null; then
+                                        print_success "$alt_package installed successfully."
+                                        install_results[$package]="INSTALLED $alt_package INSTEAD"
+                                    else
+                                        print_error "Failed to install $alt_package."
+                                        install_results[$package]="FAILED"
+                                    fi
+                                else
+                                    install_results[$package]="SKIPPED"
+                                fi
                             else
-                                print_error "Failed to install $alt_package."
+                                print_error "No alternatives found for $package."
                                 install_results[$package]="FAILED"
                             fi
-                        else
-                            install_results[$package]="SKIPPED"
                         fi
-                    else
-                        print_error "No alternatives found for $package."
-                        install_results[$package]="FAILED"
-                    fi
-                fi
+                        ;;
+                    "zypper")
+                        # Map package names if necessary for openSUSE
+                        case "$package" in
+                            "terminator")
+                                opensuse_pkg="terminator"
+                                ;;
+                            "freerdp")
+                                opensuse_pkg="freerdp"
+                                ;;
+                            *)
+                                opensuse_pkg="$package"
+                                ;;
+                        esac
+                        
+                        if sudo zypper --non-interactive install "$opensuse_pkg"; then
+                            print_success "$package installed successfully."
+                            install_results[$package]="SUCCESS"
+                        else
+                            print_error "Failed to install $package. Looking for alternatives..."
+
+                            # Search for alternatives
+                            results=$(zypper search "$package" | grep -i "$package" | head -n 5)
+
+                            if [ -n "$results" ]; then
+                                echo -e "Found possible alternatives:"
+                                counter=1
+                                alt_packages=()
+
+                                # display and store package names
+                                while IFS= read -r line; do
+                                    # Extract package name from zypper search output
+                                    pkg_name=$(echo "$line" | awk '{print $5}')
+                                    pkg_desc=$(echo "$line" | awk '{$1=$2=$3=$4=$5=""; print $0}' | sed 's/^ *//')
+                                    
+                                    if [ -n "$pkg_name" ]; then
+                                        echo -e "$counter. ${green}$pkg_name${nc} - $pkg_desc"
+                                        alt_packages+=("$pkg_name")
+                                        counter=$((counter + 1))
+                                    fi
+                                done <<<"$results"
+
+                                echo "Enter the number to install (or 0 to skip):"
+                                read -r alt_selection
+
+                                if [[ "$alt_selection" =~ ^[0-9]+$ ]] && [ "$alt_selection" != "0" ] && [ "$alt_selection" -le "${#alt_packages[@]}" ]; then
+                                    alt_package="${alt_packages[$((alt_selection - 1))]}"
+
+                                    if sudo zypper --non-interactive install "$alt_package"; then
+                                        print_success "$alt_package installed successfully."
+                                        install_results[$package]="INSTALLED $alt_package INSTEAD"
+                                    else
+                                        print_error "Failed to install $alt_package."
+                                        install_results[$package]="FAILED"
+                                    fi
+                                else
+                                    install_results[$package]="SKIPPED"
+                                fi
+                            else
+                                print_error "No alternatives found for $package."
+                                install_results[$package]="FAILED"
+                            fi
+                        fi
+                        ;;
+                esac
                 ;;
             esac
         fi
@@ -375,18 +519,39 @@ install_packages() {
 install_joplin() {
     print_message "Installing Joplin"
 
-    # dependencies first
-    print_message "Installing Joplin dependencies"
-    sudo apt install -y libfuse2
+    # Install dependencies based on package manager
+    case "$pkg_manager" in
+        "apt")
+            print_message "Installing Joplin dependencies"
+            sudo apt install -y libfuse2
 
-    if [ $? -ne 0 ]; then
-        print_error "Failed to install Joplin dependencies (libfuse2)"
-        return 1
-    fi
+            if [ $? -ne 0 ]; then
+                print_error "Failed to install Joplin dependencies (libfuse2)"
+                return 1
+            fi
+            ;;
+        "zypper")
+            print_message "Installing Joplin dependencies"
+            # Fix: Use the correct package name libfuse2 instead of fuse2
+            sudo zypper --non-interactive install libfuse2
+
+            if [ $? -ne 0 ]; then
+                print_error "Failed to install Joplin dependencies (libfuse2)"
+                return 1
+            fi
+            ;;
+    esac
 
     # make sure wget is installed
     if ! command -v wget &>/dev/null; then
-        sudo apt install -y wget
+        case "$pkg_manager" in
+            "apt")
+                sudo apt install -y wget
+                ;;
+            "zypper")
+                sudo zypper --non-interactive install wget
+                ;;
+        esac
     fi
 
     # download and run installer
@@ -405,34 +570,63 @@ install_joplin() {
 install_slack() {
     print_message "Installing Slack"
 
-    # download Slack .deb package
-    wget -O /tmp/slack.deb "https://downloads.slack-edge.com/releases/linux/4.31.155/prod/x64/slack-desktop-4.31.155-amd64.deb"
+    case "$pkg_manager" in
+        "apt")
+            # download Slack .deb package
+            wget -O /tmp/slack.deb "https://downloads.slack-edge.com/releases/linux/4.31.155/prod/x64/slack-desktop-4.31.155-amd64.deb"
 
-    if [ $? -ne 0 ]; then
-        print_error "Failed to download Slack package."
-        return 1
-    fi
+            if [ $? -ne 0 ]; then
+                print_error "Failed to download Slack package."
+                return 1
+            fi
 
-    # install dependencies
-    sudo apt install -y libappindicator1 libindicator7
+            # install dependencies
+            sudo apt install -y libappindicator1 libindicator7
 
-    # install the .deb
-    sudo dpkg -i /tmp/slack.deb
+            # install the .deb
+            sudo dpkg -i /tmp/slack.deb
 
-    if [ $? -ne 0 ]; then
-        sudo apt install -f -y
-        sudo dpkg -i /tmp/slack.deb
-    fi
+            if [ $? -ne 0 ]; then
+                sudo apt install -f -y
+                sudo dpkg -i /tmp/slack.deb
+            fi
 
-    # clean up after
-    rm -f /tmp/slack.deb
+            # clean up after
+            rm -f /tmp/slack.deb
+            ;;
+        "zypper")
+            # For openSUSE, download the RPM package
+            wget -O /tmp/slack.rpm "https://downloads.slack-edge.com/releases/linux/4.31.155/prod/x64/slack-4.31.155-0.1.el8.x86_64.rpm"
+
+            if [ $? -ne 0 ]; then
+                print_error "Failed to download Slack package."
+                return 1
+            fi
+
+            # Install the RPM and choose 'i' for ignore when asked about unsigned package
+            # Use expect-like approach to handle interactive prompts
+            print_message "Installing Slack RPM without signature check using rpm directly"
+            sudo rpm -ivh --nosignature /tmp/slack.rpm
+
+            # Clean up
+            rm -f /tmp/slack.rpm
+            ;;
+    esac
 
     if command -v slack &>/dev/null; then
         print_success "Slack installed successfully."
         return 0
     else
-        print_error "Failed to install Slack."
-        return 1
+        print_warning "Slack command not found, but installation might have completed. Check your applications menu."
+        # On some systems, the slack binary might not be in PATH
+        # Check if the application directory exists
+        if [ -d "/usr/lib/slack" ] || [ -d "/opt/slack" ]; then
+            print_success "Slack appears to be installed in the system."
+            return 0
+        else
+            print_error "Failed to install Slack."
+            return 1
+        fi
     fi
 }
 
@@ -440,15 +634,34 @@ install_slack() {
 install_vscodium() {
     print_message "Installing VSCodium"
 
-    # import GPG key
-    wget -qO - https://gitlab.com/paulcarroty/vscodium-deb-rpm-repo/raw/master/pub.gpg | sudo apt-key add -
+    case "$pkg_manager" in
+        "apt")
+            # import GPG key
+            wget -qO - https://gitlab.com/paulcarroty/vscodium-deb-rpm-repo/raw/master/pub.gpg | sudo apt-key add -
 
-    # add repository
-    echo 'deb https://paulcarroty.gitlab.io/vscodium-deb-rpm-repo/debs/ vscodium main' | sudo tee /etc/apt/sources.list.d/vscodium.list
+            # add repository
+            echo 'deb https://paulcarroty.gitlab.io/vscodium-deb-rpm-repo/debs/ vscodium main' | sudo tee /etc/apt/sources.list.d/vscodium.list
 
-    # update and install
-    sudo apt update
-    sudo apt install -y codium
+            # update and install
+            sudo apt update
+            sudo apt install -y codium
+            ;;
+        "zypper")
+            # Fix: Use the correct repository configuration for openSUSE
+            # Import the GPG key
+            sudo rpmkeys --import https://gitlab.com/paulcarroty/vscodium-deb-rpm-repo/-/raw/master/pub.gpg
+            
+            # Remove the old repository if it exists to avoid conflicts
+            sudo zypper removerepo vscodium 2>/dev/null
+            
+            # Add the repository with correct URL
+            sudo zypper addrepo -cfp 90 'https://paulcarroty.gitlab.io/vscodium-deb-rpm-repo/rpms/' vscodium
+            
+            # Refresh repos and install vscodium
+            sudo zypper refresh
+            sudo zypper --non-interactive install codium
+            ;;
+    esac
 
     if command -v codium &>/dev/null; then
         print_success "VSCodium installed successfully."
@@ -459,54 +672,65 @@ install_vscodium() {
     fi
 }
 
-# install Docker (fallback method)
+# install Docker (fallback method for Debian)
 install_docker() {
     print_message "Installing Docker from Docker's repository"
 
-    # install dependencies
-    sudo apt update
-    sudo apt install -y apt-transport-https ca-certificates curl gnupg lsb-release
+    # Debian/Ubuntu specific installation
+    if [ "$pkg_manager" = "apt" ]; then
+        # install dependencies
+        sudo apt update
+        sudo apt install -y apt-transport-https ca-certificates curl gnupg lsb-release
 
-    # add Docker's GPG key
-    curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg
+        # add Docker's GPG key
+        curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg
 
-    # set up the repo - more robust to handle different distributions
-    if [ -f /etc/debian_version ]; then
-        # For Debian-based systems
-        if [ -f /etc/os-release ]; then
-            . /etc/os-release
-            if [ "$ID" = "debian" ]; then
-                dist_name="debian"
+        # set up the repo - more robust to handle different distributions
+        if [ -f /etc/debian_version ]; then
+            # For Debian-based systems
+            if [ -f /etc/os-release ]; then
+                . /etc/os-release
+                if [ "$ID" = "debian" ]; then
+                    dist_name="debian"
+                else
+                    dist_name="ubuntu"
+                fi
             else
-                dist_name="ubuntu"
+                dist_name="debian"
             fi
         else
-            dist_name="debian"
+            dist_name="ubuntu" # Default fallback
         fi
-    else
-        dist_name="ubuntu" # Default fallback
+
+        echo \
+            "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/$dist_name \
+          $(lsb_release -cs) stable" | sudo tee /etc/apt/sources.list.d/docker.list >/dev/null
+
+        # install docker
+        sudo apt update
+        sudo apt install -y docker-ce docker-ce-cli containerd.io
+
+        # install docker-compose
+        sudo apt install -y docker-compose
     fi
-
-    echo \
-        "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/$dist_name \
-      $(lsb_release -cs) stable" | sudo tee /etc/apt/sources.list.d/docker.list >/dev/null
-
-    # install docker
-    sudo apt update
-    sudo apt install -y docker-ce docker-ce-cli containerd.io
-
-    # install docker-compose
-    sudo apt install -y docker-compose
 
     # add current user to docker group
     sudo usermod -aG docker $USER
     groups_modified=true
 
-    if command -v docker &>/dev/null && command -v docker-compose &>/dev/null; then
-        print_success "Docker and docker-compose installed successfully."
-        return 0
+    if command -v docker &>/dev/null; then
+        print_success "Docker installed successfully."
+        
+        # For docker-compose, check both docker-compose and docker compose (v2)
+        if command -v docker-compose &>/dev/null || docker compose version &>/dev/null 2>&1; then
+            print_success "docker-compose also installed successfully."
+            return 0
+        else
+            print_error "Failed to install docker-compose."
+            return 1
+        fi
     else
-        print_error "Failed to install Docker and/or docker-compose."
+        print_error "Failed to install Docker."
         return 1
     fi
 }
@@ -584,25 +808,41 @@ configure_packages() {
 install_kvm() {
     print_message "Starting KVM Installation"
 
-# cpu check
+    # CPU check
     if grep -E --color=auto 'vmx|svm' /proc/cpuinfo &>/dev/null; then
-    print_success "CPU supports hardware virtualization."
+        print_success "CPU supports hardware virtualization."
     else
-    print_error "CPU does not support hardware virtualization."
-    print_error "KVM requires hardware virtualization support. Installation aborted."
+        print_error "CPU does not support hardware virtualization."
+        print_error "KVM requires hardware virtualization support. Installation aborted."
+        return 1
     fi
 
-    # install it and needed packages
-    print_message "Installing KVM and related packages"
-    sudo apt update
-    sudo apt install -y qemu-kvm libvirt-daemon-system libvirt-clients bridge-utils virt-manager
-    
-    if [ $? -ne 0 ]; then
-        print_error "Failed to install KVM packages."
-        return 1
-    else
-        print_success "KVM packages installed successfully."
-    fi
+    # kvm
+    case "$pkg_manager" in
+        "apt")
+            print_message "Installing KVM and related packages"
+            sudo apt update
+            sudo apt install -y qemu-kvm libvirt-daemon-system libvirt-clients bridge-utils virt-manager
+            
+            if [ $? -ne 0 ]; then
+                print_error "Failed to install KVM packages."
+                return 1
+            else
+                print_success "KVM packages installed successfully."
+            fi
+            ;;
+        "zypper")
+            print_message "Installing KVM and related packages"
+            sudo zypper --non-interactive install patterns-openSUSE-kvm_server patterns-server-kvm_tools virt-manager libvirt-daemon qemu-kvm
+            
+            if [ $? -ne 0 ]; then
+                print_error "Failed to install KVM packages."
+                return 1
+            else
+                print_success "KVM packages installed successfully."
+            fi
+            ;;
+    esac
 
     # add user to libvirt group
     print_message "Adding user to libvirt group"
@@ -623,12 +863,12 @@ install_kvm() {
         print_error "Failed to start libvirt service."
     fi
 
-    # check for default network and create it if need to
+    # check for default network and create it if needed
     print_message "Checking for default virtual network"
     if sudo virsh net-list --all | grep -q default; then
         print_success "Default network already exists."
         
-        # check it's active
+        # check if it's active
         if ! sudo virsh net-list | grep -q default; then
             print_message "Starting default network"
             sudo virsh net-start default
@@ -673,6 +913,262 @@ EOF
     fi
 }
 
+# DE config
+# function to manage environmental configurations
+
+configure_environment() {
+    local env_menu_active=true
+    
+    while [ "$env_menu_active" = true ]; do
+        # detect desktop environment and window manager each time we enter the loop - commented out for causing issues just now
+        #detect_desktop_environment
+        #detect_window_manager
+        detect_system_info
+        clear
+        echo -e "${blue}==== Environmental Configuration Menu ====${nc}"
+        echo
+        echo "Early stages. Editing config files directly, Be AwARE!"
+        echo "Advanced knowledge required."
+        echo "1) Configure Desktop Environment ($de)"
+        echo "2) Configure Window Manager ($wm)"
+        echo "3) Configure Panel"
+        echo "0) Return to Main Menu"
+        echo
+        echo -n "Enter your choice: "
+        read -r env_choice
+
+        # choose editor, prefer vim if available
+        editor="vim"
+        if ! command -v vim &>/dev/null; then
+            editor="nano"
+        fi
+
+        case $env_choice in
+            1)
+                # configure Desktop Environment
+                print_message "Configuring Desktop Environment: $de"
+                
+                case "$de" in
+                    "GNOME"|"gnome"|"gnome-shell")
+                        print_message "Opening GNOME configuration directory"
+                        mkdir -p "$HOME/.config/gnome-session"
+                        $editor "$HOME/.config/gnome-session"
+                        ;;
+                    "XFCE"|"xfce"|"Xfce"|"xfce4")
+                        print_message "Opening XFCE configuration directory"
+                        mkdir -p "$HOME/.config/xfce4"
+                        $editor "$HOME/.config/xfce4"
+                        ;;
+                    "KDE"|"kde"|"plasma")
+                        print_message "Opening KDE configuration directory"
+                        mkdir -p "$HOME/.config/plasma-workspace"
+                        $editor "$HOME/.config/plasma-workspace"
+                        ;;
+                    "MATE"|"mate")
+                        print_message "Opening MATE configuration directory"
+                        mkdir -p "$HOME/.config/mate"
+                        $editor "$HOME/.config/mate"
+                        ;;
+                    "Cinnamon"|"cinnamon")
+                        print_message "Opening Cinnamon configuration directory"
+                        mkdir -p "$HOME/.config/cinnamon"
+                        $editor "$HOME/.config/cinnamon"
+                        ;;
+                    "LXDE"|"lxde")
+                        print_message "Opening LXDE configuration directory"
+                        mkdir -p "$HOME/.config/lxsession"
+                        $editor "$HOME/.config/lxsession"
+                        ;;
+                    *)
+                        print_warning "Unsupported or unknown desktop environment: $de"
+                        print_message "Please enter the path to your DE configuration directory:"
+                        read -r de_config_path
+                        
+                        if [ -n "$de_config_path" ]; then
+                            mkdir -p "$de_config_path"
+                            $editor "$de_config_path"
+                        else
+                            print_error "No path provided."
+                        fi
+                        ;;
+                esac
+                # wait for user input
+                print_message "Press any key to return to the Environmental Config menu"
+                read -n 1
+                ;;
+            2)
+                # configure Window Manager
+                print_message "Configuring Window Manager: $wm"
+                
+                case "$wm" in
+                    "i3")
+                        print_message "Opening i3 configuration directory"
+                        mkdir -p "$HOME/.config/i3"
+                        $editor "$HOME/.config/i3/config"
+                        ;;
+                    "Openbox"|"openbox")
+                        print_message "Opening Openbox configuration directory"
+                        mkdir -p "$HOME/.config/openbox"
+                        $editor "$HOME/.config/openbox"
+                        ;;
+                    "Xfwm4"|"xfwm4")
+                        print_message "Opening Xfwm4 configuration directory"
+                        mkdir -p "$HOME/.config/xfce4/xfconf/xfce-perchannel-xml"
+                        $editor "$HOME/.config/xfce4/xfconf/xfce-perchannel-xml/xfwm4.xml"
+                        ;;
+                    "KWin"|"kwin")
+                        print_message "Opening KWin configuration directory"
+                        mkdir -p "$HOME/.config"
+                        $editor "$HOME/.config/kwinrc"
+                        ;;
+                    "Mutter"|"mutter")
+                        print_message "Opening GNOME/Mutter settings"
+                        # for GNOME/Mutter use dconf-editor, but fallback to gsettings
+                        if command -v dconf-editor &>/dev/null; then
+                            dconf-editor /org/gnome/mutter/
+                        else
+                            print_warning "dconf-editor not found, using text editor instead"
+                            mkdir -p "$HOME/.config/gnome-session"
+                            $editor "$HOME/.config/gnome-session"
+                        fi
+                        ;;
+                    "Compiz"|"compiz")
+                        print_message "Opening Compiz configuration directory"
+                        mkdir -p "$HOME/.config/compiz"
+                        $editor "$HOME/.config/compiz"
+                        ;;
+                    "dwm")
+                        print_message "Opening dwm configuration directory"
+                        # dwm is normally configured by editing source code and recompiling, not tested this yet
+                        dwm_path="$HOME/.dwm"
+                        if [ -d "$dwm_path" ]; then
+                            $editor "$dwm_path/config.h"
+                        else
+                            print_message "Standard dwm config path not found. Please enter the path to your dwm config:"
+                            read -r dwm_config_path
+                            if [ -n "$dwm_config_path" ]; then
+                                mkdir -p "$(dirname "$dwm_config_path")"
+                                $editor "$dwm_config_path"
+                            else
+                                print_error "No path provided."
+                            fi
+                        fi
+                        ;;
+                    "Awesome"|"awesome")
+                        print_message "Opening Awesome configuration directory"
+                        mkdir -p "$HOME/.config/awesome"
+                        $editor "$HOME/.config/awesome/rc.lua"
+                        ;;
+                    *)
+                        print_warning "Unsupported or unknown window manager: $wm"
+                        print_message "Please enter the path to your WM configuration directory:"
+                        read -r wm_config_path
+                        
+                        if [ -n "$wm_config_path" ]; then
+                            mkdir -p "$wm_config_path"
+                            $editor "$wm_config_path"
+                        else
+                            print_error "No path provided."
+                        fi
+                        ;;
+                esac
+                # again, wait for user input to return to submenu
+                print_message "Press any key to return to the Environmental Config menu"
+                read -n 1
+                ;;
+            3)
+                # configure Panel - heavy WIP
+                print_message "Configuring Panel"
+                
+                # detect panel based on DE or WM
+                panel=""
+                if [[ "$de" == *"XFCE"* || "$de" == *"xfce"* ]]; then
+                    panel="xfce4-panel"
+                elif [[ "$de" == *"GNOME"* || "$de" == *"gnome"* ]]; then
+                    panel="gnome-panel"
+                elif [[ "$de" == *"KDE"* || "$de" == *"kde"* || "$de" == *"plasma"* ]]; then
+                    panel="plasma-panel"
+                elif [[ "$de" == *"LXDE"* || "$de" == *"lxde"* ]]; then
+                    panel="lxpanel"
+                elif [[ "$de" == *"MATE"* || "$de" == *"mate"* ]]; then
+                    panel="mate-panel"
+                elif [[ "$wm" == "i3" ]]; then
+                    panel="i3bar"
+                elif [[ "$wm" == *"Awesome"* || "$wm" == *"awesome"* ]]; then
+                    panel="awesome-wibar"
+                else
+                    panel="unknown"
+                fi
+                
+                print_message "Detected panel: $panel"
+                
+                case "$panel" in
+                    "xfce4-panel")
+                        mkdir -p "$HOME/.config/xfce4/panel"
+                        $editor "$HOME/.config/xfce4/panel"
+                        ;;
+                    "gnome-panel")
+                        # GNOME panel is usually done with dconf
+                        if command -v dconf-editor &>/dev/null; then
+                            dconf-editor /org/gnome/gnome-panel/
+                        else
+                            print_warning "dconf-editor not found, using text editor instead"
+                            mkdir -p "$HOME/.config/gnome-panel"
+                            $editor "$HOME/.config/gnome-panel"
+                        fi
+                        ;;
+                    "plasma-panel")
+                        mkdir -p "$HOME/.config"
+                        $editor "$HOME/.config/plasma-org.kde.plasma.desktop-appletsrc"
+                        ;;
+                    "lxpanel")
+                        mkdir -p "$HOME/.config/lxpanel"
+                        $editor "$HOME/.config/lxpanel"
+                        ;;
+                    "mate-panel")
+                        mkdir -p "$HOME/.config/mate-panel"
+                        $editor "$HOME/.config/mate-panel"
+                        ;;
+                    "i3bar")
+                        # i3bar is configured in the i3 config file
+                        mkdir -p "$HOME/.config/i3"
+                        $editor "$HOME/.config/i3/config"
+                        ;;
+                    "awesome-wibar")
+                        # Awesome's wibar is configured in rc.lua
+                        mkdir -p "$HOME/.config/awesome"
+                        $editor "$HOME/.config/awesome/rc.lua"
+                        ;;
+                    *)
+                        print_warning "Unsupported or unknown panel"
+                        print_message "Please enter the path to your panel configuration directory:"
+                        read -r panel_config_path
+                        
+                        if [ -n "$panel_config_path" ]; then
+                            mkdir -p "$panel_config_path"
+                            $editor "$panel_config_path"
+                        else
+                            print_error "No path provided."
+                        fi
+                        ;;
+                esac
+                # return to submenu, again
+                print_message "Press any key to return to the Environmental Config menu"
+                read -n 1
+                ;;
+            0)
+                # return to main menu 
+                env_menu_active=false
+                ;;
+            *)
+                print_error "Invalid choice."
+                print_message "Press any key to return to the Environmental Config menu"
+                read -n 1
+                ;;
+        esac
+    done
+}
+
 # display the main menu
 display_menu() {
     
@@ -681,7 +1177,7 @@ display_menu() {
     echo -e "${blue}==== Post-Installation Menu ====${nc}"
     echo "1) Install and Configure Basic Packages"
     echo "2) Install and Configure KVM Hypervisor"
-    echo "3) Work in progress"
+    echo "3) Environmental configs (Work in progress)"
     echo "4) also a WIP"
     echo "0) Exit"
     echo
@@ -694,58 +1190,48 @@ display_menu() {
 # wait for user input before returning to menu
 wait_for_key() {
     echo
-    print_message "Hit any key to return to the menu.."
+    print_message "Hit any key to return to the menu"
     read -n 1
 }
 
 # main function with brand new menu system
-main() {
-    print_message "Starting post-install script"
-
-    # check for sudo
-    check_sudo || exit 1
-
-    # detect system information
-    detect_system_info
-
-    # menu loop
-    while true; do
-        display_menu
-        choice=$?
-        
-        case $choice in
-            1)
-                # install and Configure Basic Packages
-                install_packages
-                wait_for_key
-                ;;
-            2)
-                # install and Configure KVM
-                install_kvm
-                wait_for_key
-                ;;
-            3)
-                print_message "placeholder for Environment Config (work in progress)"
-                wait_for_key
-                ;;
-            4)
-                print_message "placeholder for system config (work in progress)"
-                wait_for_key
-                ;;
-            0)
-                print_message "Exiting script, logs saved to $log_file"
-                if [ "$groups_modified" = true ]; then
+# menu loop
+while true; do
+    display_menu
+    choice=$?
+    
+    case $choice in
+        1)
+            # install and Configure Basic Packages
+            install_packages
+            wait_for_key
+            ;;
+        2)
+            # install and Configure KVM
+            install_kvm
+            wait_for_key
+            ;;
+        3)
+            # environmental configs 
+            configure_environment
+            ;;
+        4)
+            print_message "placeholder for system config (work in progress)"
+            wait_for_key
+            ;;
+        0)
+            print_message "Exiting script, logs saved to $log_file"
+            if [ "$groups_modified" = true ]; then
                 print_message "You've been added to new user groups, you'll need to relog."
-                fi
-                exit 0
-                ;;
-            *)
-                print_error "Try again!?"
-                wait_for_key
-                ;;
-        esac
-    done
-}
+            fi
+            exit 0
+            ;;
+        *)
+            print_error "Try again!?"
+            wait_for_key
+            ;;
+    esac
+done
 
 # RUN IT!!
 main
